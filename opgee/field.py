@@ -15,7 +15,7 @@ from .config import getParamAsList
 from .constants import DETAILED_RESULT
 from .container import Container
 from .core import elt_name, instantiate_subelts, dict_from_list, STP
-from .energy import Energy
+from .energy import EN_CRUDE_OIL, EN_DIESEL, EN_ELECTRICITY, EN_NATURAL_GAS, EN_NGL, EN_PETCOKE, EN_RESID, EN_UPG_PROC_GAS, Energy
 from .error import (
     OpgeeException,
     OpgeeStopIteration,
