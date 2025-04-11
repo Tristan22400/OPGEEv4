@@ -14,7 +14,7 @@ from .units import ureg
 from .config import getParamAsList
 from .constants import DETAILED_RESULT
 from .container import Container
-from .core import elt_name, instantiate_subelts, dict_from_list, STP, magnitude
+from .core import elt_name, instantiate_subelts, dict_from_list, STP
 from .energy import EN_CRUDE_OIL, EN_DIESEL, EN_ELECTRICITY, EN_NATURAL_GAS, EN_NGL, EN_PETCOKE, EN_RESID, EN_UPG_PROC_GAS, Energy
 from .error import (
     OpgeeException,
@@ -958,11 +958,11 @@ class Field(Container):
 
         streams = self.streams()
 
-        streams_data = pd.concat([s.to_dataframe() for s in streams])
+        streams_data = pd.concat([s.to_dataframe() for s in streams if not s.to_dataframe().empty])
 
         # TBD: need to save the streams data to CSV
         #  =========================================
-        dfs = [s.to_dataframe() for s in self.streams()]
+        dfs = [s.to_dataframe() for s in self.streams() if not s.to_dataframe().empty]
         streams_data = pd.concat(dfs)
 
 

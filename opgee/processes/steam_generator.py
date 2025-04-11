@@ -326,15 +326,21 @@ class SteamGenerator(OpgeeObject):  # N.B. NOT a subclass of Process
     @staticmethod
     def get_combustion_comp(coeff_table, gas_comp):
         """
-        calculate reaction gas comp using combustion table and gas comp
-
-        :param coeff_table:
-        :param gas_comp:
-        :return: (float) Pandas Series, reaction gas comp
+        Calculate reaction gas comp using combustion table and gas comp.
         """
-        table = coeff_table.loc[gas_comp.index, :]
-        table = table.transpose().apply(lambda x: x.astype(gas_comp.dtype))
-        result = table.dot(gas_comp)
+        # Ensure table rows match gas_comp index
+        table = coeff_table.loc[gas_comp.index, :].transpose()
+
+        # Convert both to consistent units (e.g., mol/mol or 'frac')
+        # Step 1: strip units and convert everything to magnitude
+        gas_comp_mag = gas_comp.pint.to('frac').pint.magnitude
+        table_mag = table.apply(lambda col: col.pint.to('frac').pint.magnitude)
+
+        # Step 2: Perform dot product on raw magnitudes
+        result_mag = table_mag.dot(gas_comp_mag)
+
+        # Step 3: Re-apply units if needed (optional)
+        result = result_mag * ureg('frac')
 
         return result
 
