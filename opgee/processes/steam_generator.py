@@ -7,6 +7,7 @@
 # See LICENSE.txt for license details.
 #
 import pandas as pd
+import numpy as np
 
 from ..units import ureg
 from ..core import OpgeeObject
@@ -116,22 +117,27 @@ class SteamGenerator(OpgeeObject):  # N.B. NOT a subclass of Process
             :return: Tuple with fuel consumption for steam generation (MJ/day), mass flow rate in (kg/day),
                      mass flow rate out (kg/day), energy flow rate in (MJ/day), and energy flow rate out (MJ/day)
         """
-
+        print(prod_water_mass_rate, makeup_water_mass_rate, water_mass_rate_for_injection, blowdown_water_mass_rate, "Inputs")
         prod_water_enthalpy_rate, makeup_water_enthalpy_rate, blowdown_water_recoverable_enthalpy_rate, steam_out_enthalpy_rate = \
             self.get_water_steam_enthalpy_rate(prod_water_mass_rate,
                                                makeup_water_mass_rate,
                                                water_mass_rate_for_injection,
                                                blowdown_water_mass_rate)
+        print(prod_water_enthalpy_rate, makeup_water_enthalpy_rate, blowdown_water_recoverable_enthalpy_rate, steam_out_enthalpy_rate, "Enthalpy Rates")
+        
         # OTSG combustion
         gas_MW_combust, gas_LHV, \
         air_requirement_fuel, air_requirement_LHV_fuel, air_requirement_LHV_stream, \
         exhaust_consump, exhaust_consump_sum, exhaust_consump_MW = self.get_combustion_parameters("OTSG")
-
+        print(gas_MW_combust, gas_LHV, air_requirement_fuel, air_requirement_LHV_fuel, air_requirement_LHV_stream, exhaust_consump, exhaust_consump_sum, exhaust_consump_MW, "Combustion Parameters")
+        
         LHV_fuel, LHV_stream = self.get_LHV_fuel_and_steam_series(exhaust_consump,
                                                                   self.OTSG_exhaust_temp_series,
                                                                   gas_MW_combust,
                                                                   exhaust_consump_sum,
                                                                   exhaust_consump_MW)
+        print(LHV_fuel, LHV_stream, "LHV Fuel and Steam Series")
+
         input_enthalpy_per_unit_fuel = \
             gas_LHV + air_requirement_LHV_fuel - LHV_fuel["outlet_before_economizer"]
         shell_loss_per_unit_fuel = \
@@ -176,37 +182,80 @@ class SteamGenerator(OpgeeObject):  # N.B. NOT a subclass of Process
         fuel_consumption_for_steam_generation_energy = fuel_consumption_for_steam_generation_mass * fuel_LHV
 
         # mass and energy balance
-        air_in_mass_rate = \
-            air_requirement_fuel.sum() * \
-            self.gas.molar_weight_from_molar_fracs(self.inlet_air_comp) * \
-            fuel_consumption_for_steam_generation_mass
+        air_in_mass_rate = (
+            (air_requirement_fuel.sum().to("dimensionless").m)
+            * self.gas.molar_weight_from_molar_fracs(self.inlet_air_comp)
+            * fuel_consumption_for_steam_generation_mass
+        )
         air_in_mass_rate = air_in_mass_rate / gas_MW_combust if self.OTSG_fuel_type == "Gas" else air_in_mass_rate
 
-        outlet_exhaust_mass = exhaust_consump_sum * exhaust_consump_MW * fuel_consumption_for_steam_generation_mass
-        outlet_exhaust_mass = \
-            outlet_exhaust_mass / gas_MW_combust if self.OTSG_fuel_type == "Gas" else outlet_exhaust_mass
+        
+        outlet_exhaust_mass = (
+            (exhaust_consump_sum.to("dimensionless").m)
+            * exhaust_consump_MW
+            * fuel_consumption_for_steam_generation_mass
+        )
+        outlet_exhaust_mass = outlet_exhaust_mass / gas_MW_combust if self.OTSG_fuel_type == "Gas" else outlet_exhaust_mass
 
         temp = delta_H - recoverable_heat_before_economizer - recoverable_heat_before_preheater
         H_eco = constant_before_economizer * temp
         H_heater = constant_before_preheater * temp
         H_outlet = constant_outlet * temp
 
-        mass_in = \
-            fuel_consumption_for_steam_generation_mass + air_in_mass_rate + \
-            prod_water_mass_rate + makeup_water_mass_rate
+        # Debugging: Print intermediate values
+        print(f"Corrected Air In Mass Rate: {air_in_mass_rate} kg/d")
+        print(f"Corrected Outlet Exhaust Mass: {outlet_exhaust_mass} kg/d")
+
+        # Recalculate mass_in and mass_out
+        mass_in = (
+            fuel_consumption_for_steam_generation_mass
+            + air_in_mass_rate
+            + prod_water_mass_rate
+            + makeup_water_mass_rate
+        )
         mass_out = water_mass_rate_for_injection + blowdown_water_mass_rate + outlet_exhaust_mass
 
-        energy_in = \
-            fuel_consumption_for_steam_generation_mass * gas_LHV + \
-            air_in_mass_rate * air_requirement_LHV_stream + \
-            prod_water_enthalpy_rate + makeup_water_enthalpy_rate
-        energy_out = \
-            outlet_exhaust_mass * LHV_stream["outlet"] + \
-            (H_heater - H_outlet - recoverable_heat_before_preheater) + \
-            (H_eco - H_heater - recoverable_heat_before_economizer) + \
-            fuel_consumption_for_steam_generation_mass * other_loss_per_unit_fuel + \
-            fuel_consumption_for_steam_generation_mass * shell_loss_per_unit_fuel + \
-            steam_out_enthalpy_rate - blowdown_water_recoverable_enthalpy_rate
+        # Debugging: Print mass balance
+        print(f"Corrected Mass IN: {mass_in} kg/d")
+        print(f"Corrected Mass OUT: {mass_out} kg/d")
+
+        # Add debug prints for energy components
+        print("\nEnergy Balance Components:")
+        print("Energy IN:")
+        print(f"Fuel energy: {fuel_consumption_for_steam_generation_mass * gas_LHV} MJ/d")
+        print(f"Air energy: {air_in_mass_rate * air_requirement_LHV_stream} MJ/d")
+        print(f"Produced water energy: {prod_water_enthalpy_rate} MJ/d")
+        print(f"Makeup water energy: {makeup_water_enthalpy_rate} MJ/d")
+        
+        print("\nEnergy OUT:")
+        print(f"Exhaust energy: {outlet_exhaust_mass * LHV_stream['outlet']} MJ/d")
+        print(f"Heater energy: {(H_heater - H_outlet + recoverable_heat_before_preheater)} MJ/d")
+        print(f"Economizer energy: {(H_eco - H_heater + recoverable_heat_before_economizer)} MJ/d")
+        print(f"Other losses: {fuel_consumption_for_steam_generation_mass * other_loss_per_unit_fuel} MJ/d")
+        print(f"Shell losses: {fuel_consumption_for_steam_generation_mass * shell_loss_per_unit_fuel} MJ/d")
+        print(f"Steam out energy: {steam_out_enthalpy_rate} MJ/d")
+        print(f"Blowdown recoverable energy: {blowdown_water_recoverable_enthalpy_rate} MJ/d")
+
+        energy_in = (
+            fuel_consumption_for_steam_generation_mass * gas_LHV +
+            air_in_mass_rate * air_requirement_LHV_stream +
+            prod_water_enthalpy_rate +
+            makeup_water_enthalpy_rate
+        )
+        energy_out = (
+            outlet_exhaust_mass * LHV_stream["outlet"] +
+            (H_heater - H_outlet + recoverable_heat_before_preheater) +
+            (H_eco - H_heater + recoverable_heat_before_economizer) +
+            fuel_consumption_for_steam_generation_mass * other_loss_per_unit_fuel +
+            fuel_consumption_for_steam_generation_mass * shell_loss_per_unit_fuel +
+            steam_out_enthalpy_rate +
+            blowdown_water_recoverable_enthalpy_rate
+        )
+
+        print(f"\nTotal Energy IN: {energy_in} MJ/d")
+        print(f"Total Energy OUT: {energy_out} MJ/d")
+        print(f"Energy difference (IN-OUT): {energy_in - energy_out} MJ/d")
+        print(f"Energy balance ratio (IN/OUT): {energy_in/energy_out}")
 
         return fuel_consumption_for_steam_generation_energy, mass_in, mass_out, energy_in, energy_out
 
@@ -326,22 +375,20 @@ class SteamGenerator(OpgeeObject):  # N.B. NOT a subclass of Process
     @staticmethod
     def get_combustion_comp(coeff_table, gas_comp):
         """
-        Calculate reaction gas comp using combustion table and gas comp.
+        calculate reaction gas comp using combustion table and gas comp
+
+        :param coeff_table:
+        :param gas_comp:
+        :return: (float) Pandas Series, reaction gas comp
         """
-        # Ensure table rows match gas_comp index
-        table = coeff_table.loc[gas_comp.index, :].transpose()
-
-        # Convert both to consistent units (e.g., mol/mol or 'frac')
-        # Step 1: strip units and convert everything to magnitude
-        gas_comp_mag = gas_comp.pint.to('frac').pint.magnitude
-        table_mag = table.apply(lambda col: col.pint.to('frac').pint.magnitude)
-
-        # Step 2: Perform dot product on raw magnitudes
-        result_mag = table_mag.dot(gas_comp_mag)
-
-        # Step 3: Re-apply units if needed (optional)
-        result = result_mag * ureg('frac')
-
+        table = coeff_table.loc[gas_comp.index, :]
+        table = table.transpose().apply(lambda x: x.astype(gas_comp.dtype))
+        table_float = table.astype(float)
+        gas_comp_float = gas_comp.astype(float)
+        # Convert percent to fraction before dot product
+        result_values = np.dot(table_float.values, gas_comp_float.values / 100)
+        result = pd.Series(result_values, index=table.index)
+        result = result.astype("pint[mol_pct]")
         return result
 
     def get_LHV_fuel_and_steam_series(self, comp_series, temp_series, fuel_MW, comp_series_sum, comp_series_MW):
@@ -363,6 +410,15 @@ class SteamGenerator(OpgeeObject):  # N.B. NOT a subclass of Process
             temp = (comp_series * self.gas.combustion_enthalpy(comp_series, temp_series[name], PHASE_GAS)).sum()
             LHV_fuel[name] = temp / fuel_MW
             LHV_stream[name] = temp / comp_series_sum / comp_series_MW
+
+        """# Debugging: Print intermediate values
+        print(f"Comp Series: {comp_series}")
+        print(f"Temp Series: {temp_series}")
+        print(f"Fuel MW: {fuel_MW}")
+        print(f"Comp Series Sum: {comp_series_sum}")
+        print(f"Comp Series MW: {comp_series_MW}")
+        print(f"LHV Fuel: {LHV_fuel}")
+        print(f"LHV Stream: {LHV_stream}")"""
 
         return LHV_fuel, LHV_stream
 
@@ -390,6 +446,12 @@ class SteamGenerator(OpgeeObject):  # N.B. NOT a subclass of Process
             air_requirement_fuel = \
                 (self.HRSG_frac_import_gas * self.import_gas_reactants_comp +
                  self.HRSG_frac_prod_gas * self.prod_gas_reactants_comp) * self.O2_excess_HRSG
+        print(air_requirement_fuel, "Air Requirement Fuel")
+        print(self.inlet_air_comp, "Inlet Air Comp")
+        print(self.import_gas_reactants_comp, "Import Gas Reactants Comp")
+        print(self.prod_gas_reactants_comp, "Prod Gas Reactants Comp")
+        print(liquid_fuel_comp, "Liquid Fuel Comp")
+        print(self.O2_excess_OTSG, "O2 Excess OTSG")
 
         air_requirement_fuel_sum = ureg.Quantity(air_requirement_fuel.sum(), "percent")
         air_requirement_fuel["C1"] = 100
@@ -412,6 +474,7 @@ class SteamGenerator(OpgeeObject):  # N.B. NOT a subclass of Process
 
         if SG_type == "OTSG":
             if self.OTSG_fuel_type == "Gas":
+                print("entrance")
                 exhaust_consump = (self.OTSG_frac_import_gas * self.import_gas_products_comp +
                                    self.OTSG_frac_prod_gas * self.prod_gas_products_comp) + (
                                           self.O2_excess_OTSG - 1) / self.O2_excess_OTSG * air_requirement_fuel
@@ -425,12 +488,31 @@ class SteamGenerator(OpgeeObject):  # N.B. NOT a subclass of Process
                 (self.HRSG_frac_import_gas * self.import_gas_products_comp +
                  self.HRSG_frac_prod_gas * self.prod_gas_products_comp) + \
                 (self.O2_excess_HRSG - 1) / self.O2_excess_HRSG * air_requirement_fuel
+            
+        print(exhaust_consump, "Exhaust Consumption")
+        print(self.HRSG_frac_import_gas, "HRSG Fraction Import Gas")
+        print(self.HRSG_frac_prod_gas, "HRSG Fraction Prod Gas")
+        print(self.import_gas_products_comp, "Import Gas Products Comp")
+        print(self.prod_gas_products_comp, "Prod Gas Products Comp")
+        print(self.O2_excess_HRSG, "O2 Excess HRSG")
+        print(self.O2_excess_OTSG, "O2 Excess OTSG")
+        print(air_requirement_fuel, "Air Requirement Fuel")
+        print(liquid_fuel_comp, "Liquid Fuel Comp")
+        print(self.OTSG_frac_import_gas, "OTSG Fraction Import Gas")
+        print(self.OTSG_frac_prod_gas, "OTSG Fraction Prod Gas")
+
         exhaust_consump_sum = exhaust_consump.sum()
         exhaust_consump["C1"] = ureg.Quantity(100.0, "percent")
         exhaust_consump = pd.Series(exhaust_consump, dtype="pint[percent]")
         exhaust_consump_MW = \
             self.gas.molar_weight_from_molar_fracs(exhaust_consump.drop(labels=["C1"])) / \
             exhaust_consump.drop(labels=["C1"]).sum()
+
+        """# Debugging: Print intermediate values
+        print(f"Liquid Fuel Comp: {liquid_fuel_comp}")
+        print(f"Exhaust Consump: {exhaust_consump}")
+        print(f"Exhaust Consump Sum: {exhaust_consump_sum}")
+        print(f"Exhaust Consump MW: {exhaust_consump_MW}")"""
 
         return exhaust_consump, exhaust_consump_sum, exhaust_consump_MW
 
@@ -515,6 +597,17 @@ class SteamGenerator(OpgeeObject):  # N.B. NOT a subclass of Process
 
         steam_out_enthalpy_rate = desired_steam_enthalpy_rate + blowdown_before_heat_recovery_enthalpy_rate
 
+        """# Debugging: Print intermediate values
+        print(f"Prod Water Mass Rate: {prod_water_mass_rate}")
+        print(f"Makeup Water Mass Rate: {makeup_water_mass_rate}")
+        print(f"Water Mass Rate for Injection: {water_mass_rate_for_injection}")
+        print(f"Blowdown Water Mass Rate: {blowdown_water_mass_rate}")
+        print(f"Prod Water Enthalpy Rate: {prod_water_enthalpy_rate}")
+        print(f"Makeup Water Enthalpy Rate: {makeup_water_enthalpy_rate}")
+        print(f"Desired Steam Enthalpy Rate: {desired_steam_enthalpy_rate}")
+        print(f"Blowdown Water Recoverable Enthalpy Rate: {blowdown_water_recoverable_enthalpy_rate}")
+        print(f"Steam Out Enthalpy Rate: {steam_out_enthalpy_rate}")"""
+
         return prod_water_enthalpy_rate, makeup_water_enthalpy_rate, \
                blowdown_water_recoverable_enthalpy_rate, steam_out_enthalpy_rate
 
@@ -525,7 +618,9 @@ class SteamGenerator(OpgeeObject):  # N.B. NOT a subclass of Process
         :param SG_type: (str) steam generator type such as "OTSG" and "HRSG"
         :return:
         """
-
+        print(self.imported_fuel_gas_comp, "Imported Fuel Gas Comp")
+        print(self.processed_prod_gas_comp, "Processed Prod Gas Comp")
+        print(self.OTSG_frac_import_gas, "OTSG Frac Import Gas")
         processed_prod_gas_comp = self.processed_prod_gas_comp
         exported_gas_stream = self.field.get_process_data("exported_gas")
         if exported_gas_stream and exported_gas_stream.total_flow_rate().m != 0.0:
@@ -539,10 +634,33 @@ class SteamGenerator(OpgeeObject):  # N.B. NOT a subclass of Process
         gas_MW_combust = self.gas.molar_weight_from_molar_fracs(gas_combusted)
         gas_LHV = self.gas.mass_energy_density_from_molar_fracs(gas_combusted)
 
+        print(gas_combusted, "Gas Combusted")
+        print(gas_MW_combust, "Gas MW Combusted")
+        print(gas_LHV, "Gas LHV")
+
         air_requirement_fuel, air_requirement_LHV_fuel, air_requirement_LHV_stream = \
             self.get_air_requirement(gas_MW_combust, SG_type)
         exhaust_consump, exhaust_consump_sum, exhaust_consump_MW = self.get_exhaust_parameters(
             air_requirement_fuel, SG_type)
+
+        print(air_requirement_fuel, "Air Requirement Fuel")
+        print(air_requirement_LHV_fuel, "Air Requirement LHV Fuel")
+        print(air_requirement_LHV_stream, "Air Requirement LHV Stream")
+        print(SG_type, "SG Type")
+        print(exhaust_consump, "Exhaust Consump")
+        print(exhaust_consump_sum, "Exhaust Consump Sum")
+        print(exhaust_consump_MW, "Exhaust Consump MW")
+        
+
+        """# Debugging: Print intermediate values
+        print(f"Processed Prod Gas Comp: {processed_prod_gas_comp}")
+        print(f"Gas Combusted: {gas_combusted}")
+        print(f"Gas MW Combust: {gas_MW_combust}")
+        print(f"Gas LHV: {gas_LHV}")
+        print(f"Air Requirement Fuel: {air_requirement_fuel}")
+        print(f"Exhaust Consump: {exhaust_consump}")
+        print(f"Exhaust Consump Sum: {exhaust_consump_sum}")
+        print(f"Exhaust Consump MW: {exhaust_consump_MW}")"""
 
         return gas_MW_combust, gas_LHV, \
                air_requirement_fuel, air_requirement_LHV_fuel, air_requirement_LHV_stream, \
