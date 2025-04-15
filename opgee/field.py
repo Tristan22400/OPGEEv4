@@ -145,6 +145,8 @@ class Field(Container):
         self.modifies = None
 
         self.carbon_intensity = ureg.Quantity(0.0, "g/MJ")
+        self.net_energy_intensity = ureg.Quantity(0.0, "mmbtu/mmbtu")
+        self.external_energy_intensity = ureg.Quantity(0.0, "mmbtu/mmbtu")
 
         # These are set when carbon intensity is computed
         self.energy_output = ureg.Quantity(0.0, "mmbtu/day")
@@ -536,7 +538,7 @@ class Field(Container):
             self.carbon_intensity = (
                 self.compute_carbon_intensity(analysis) if compute_ci else None
             )
-            self.energy_intensity = (
+            self.net_energy_intensity, self.external_energy_intensity = (
                 self.compute_energy_intensity(analysis) if compute_ei else None
             )
             _logger.info(timer.stop())
@@ -678,26 +680,11 @@ class Field(Container):
         """
         onsite_energy = self.energy.rates().sum()
         net_import = self.get_net_imported_product()
-        net_import_energy = 0
-
-        from .import_export import WATER, N2, CO2_Flooding
-
-        for product, energy_rate in net_import.items():
-            # TODO: Water, N2, and CO2 flooding is not in self.upstream_CI and not in upstream-CI.csv,
-            #  which has units of g/mmbtu
-            if product == WATER or product == N2 or product == CO2_Flooding:
-                continue
-
-            energy_rate = (
-                energy_rate
-                if isinstance(energy_rate, pint.Quantity)
-                else ureg.Quantity(energy_rate, "mmbtu/day")
-            )
-
-            if energy_rate.m > 0:
-                net_import_energy += energy_rate.m
+        net_import_energy = self.get_imported_energy(net_import)
         
-        total_energy = ureg.Quantity(net_import_energy,'mmBtu/day') + onsite_energy
+        import_energy = ureg.Quantity(net_import_energy,'mmBtu/day')
+        
+        net_total_energy = import_energy + onsite_energy
 
         # TODO: add option for displacement method
         # fn_unit = NATURAL_GAS if analysis.fn_unit == 'gas' else CRUDE_OIL
@@ -710,13 +697,19 @@ class Field(Container):
         # export_LHV = export_df.drop(columns=["Water"]).sum(axis='columns').sum()
         # self.carbon_intensity = ci = (total_emissions / export_LHV).to('grams/MJ')
         boundary_energy_flow_rate = self.boundary_energy_flow_rate(analysis)
-        self.energy_intensity = ei = ureg.Quantity(0, "mmBtu/mmBtu")
+        self.net_energy_intensity = net_ei = ureg.Quantity(0, "mmBtu/mmBtu")
         if boundary_energy_flow_rate.m != 0:
-            self.energy_intensity = ei = (
-                    total_energy / boundary_energy_flow_rate
+            self.net_energy_intensity = net_ei = (
+                    net_total_energy / boundary_energy_flow_rate
             ).to("mmBtu/mmBtu")
 
-        return ei
+        self.external_energy_intensity = external_ei = ureg.Quantity(0, "mmBtu/mmBtu")
+        if boundary_energy_flow_rate.m != 0:
+            self.external_energy_intensity = external_ei = (
+                    import_energy / boundary_energy_flow_rate
+            ).to("mmBtu/mmBtu")
+
+        return net_ei, external_ei
 
     def partial_ci_values(self, analysis, nodes):
         """
@@ -794,25 +787,9 @@ class Field(Container):
         ]
 
         net_import = self.get_net_imported_product()
-        net_import_energy = 0
+        net_import_energy = self.get_imported_energy(net_import)
 
-        from .import_export import WATER, N2, CO2_Flooding
-
-        for product, energy_rate in net_import.items():
-            # TODO: Water, N2, and CO2 flooding is not in self.upstream_CI and not in upstream-CI.csv,
-            #  which has units of g/mmbtu
-            if product == WATER or product == N2 or product == CO2_Flooding:
-                continue
-
-            energy_rate = (
-                energy_rate
-                if isinstance(energy_rate, pint.Quantity)
-                else ureg.Quantity(energy_rate, "mmbtu/day")
-            )
-
-            if energy_rate.m > 0:
-                net_import_energy += energy_rate.m
-        results.append(("Import", ureg.Quantity(net_import_energy/energy_output.m, "dimensionless")))
+        results.append(("Import", ureg.Quantity(net_import_energy/energy_output, "dimensionless")))
         return results
 
     def energy_and_emissions(self, analysis):
@@ -953,7 +930,7 @@ class Field(Container):
         ei_results = (
             None
             if ei_tuples is None
-            else [("TOTAL", self.energy_intensity)] + ei_tuples
+            else [("NET_TOTAL", self.net_energy_intensity),("EXTERNAL_TOTAL", self.external_energy_intensity) ] + ei_tuples
         )
 
         streams = self.streams()
